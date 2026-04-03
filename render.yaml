@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: bd-commission-reports
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn server:app
+    envVars:
+      - key: TEMPLATE_B64
+        sync: false
