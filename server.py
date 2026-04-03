@@ -90,19 +90,24 @@ def get_signature(access_token):
         return ''
 
 def create_draft(access_token, to, cc, subject, body_text, attachment_bytes, attachment_filename):
-    msg = MIMEMultipart()
+    # Outer message carries the attachment
+    msg = MIMEMultipart('mixed')
     msg['To'] = to
     if cc:
         msg['Cc'] = cc
     msg['Subject'] = subject
+
+    # Inner alternative part: plain + html (email client picks the best one)
+    alt = MIMEMultipart('alternative')
     signature = get_signature(access_token)
-    body_html = ''.join(f'<p>{line}</p>' if line.strip() else '<br>' for line in body_text.split('\n'))
+    body_html = ''.join(f'<p>{line}</p>' if line.strip() else '' for line in body_text.split('\n'))
     if signature:
-        html_body = f'<html><body>{body_html}<br><br>{signature}</body></html>'
+        html_body = f'<html><body>{body_html}<br>{signature}</body></html>'
     else:
         html_body = f'<html><body>{body_html}</body></html>'
-    msg.attach(MIMEText(body_text, 'plain'))
-    msg.attach(MIMEText(html_body, 'html'))
+    alt.attach(MIMEText(body_text, 'plain'))
+    alt.attach(MIMEText(html_body, 'html'))
+    msg.attach(alt)
 
     part = MIMEBase('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     part.set_payload(attachment_bytes)
