@@ -3,7 +3,7 @@ from flask_cors import CORS
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment
 from datetime import datetime
-import base64, io, os
+import base64, io, os, anthropic
 
 app = Flask(__name__)
 CORS(app)
@@ -66,6 +66,40 @@ def build():
             rep['email'], rep.get('cc'), rep['monthLabel'], rep['orders']
         )
     return jsonify(results)
+
+@app.route('/draft-emails', methods=['POST'])
+def draft_emails():
+    data = request.json
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if not api_key:
+        return jsonify({'error': 'ANTHROPIC_API_KEY not set'}), 500
+
+    client = anthropic.Anthropic(api_key=api_key)
+    results = []
+
+    for email in data.get('emails', []):
+        to = email['to']
+        cc = email.get('cc', '')
+        subject = email['subject']
+        body = email['body']
+
+        prompt = f"Create a Gmail draft with these exact details:\nTo: {to}"
+        if cc:
+            prompt += f"\nCC: {cc}"
+        prompt += f"\nSubject: {subject}\nBody:\n{body}\n\nReply with only: DONE"
+
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=500,
+                mcp_servers=[{"type": "url", "url": "https://gmail.mcp.claude.com/mcp", "name": "gmail-mcp"}],
+                messages=[{"role": "user", "content": prompt}]
+            )
+            results.append({'group': email['group'], 'status': 'ok'})
+        except Exception as e:
+            results.append({'group': email['group'], 'status': 'error', 'message': str(e)})
+
+    return jsonify({'results': results})
 
 @app.route('/')
 def health():
