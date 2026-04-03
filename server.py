@@ -8,17 +8,17 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 import base64, io, os, json, requests
- 
+
 app = Flask(__name__)
 CORS(app)
- 
+
 TEMPLATE_B64 = os.environ.get('TEMPLATE_B64', '')
 CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET', '')
 REFRESH_TOKEN = os.environ.get('GOOGLE_REFRESH_TOKEN', '')
 REDIRECT_URI = 'https://bd-commission-reports.onrender.com/oauth/callback'
-SCOPES = 'https://www.googleapis.com/auth/gmail.compose'
- 
+SCOPES = 'https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic'
+
 def get_access_token():
     resp = requests.post('https://oauth2.googleapis.com/token', data={
         'client_id': CLIENT_ID,
@@ -27,14 +27,14 @@ def get_access_token():
         'grant_type': 'refresh_token',
     })
     return resp.json().get('access_token')
- 
+
 def parse_date(s):
     if not s: return None
     for fmt in ('%m/%d/%Y','%m/%d/%y','%Y-%m-%dT%H:%M:%S','%Y-%m-%d %H:%M:%S','%Y-%m-%d'):
         try: return datetime.strptime(str(s).strip(), fmt)
         except: pass
     return None
- 
+
 def build_report(email, cc, month_label, orders):
     wb = load_workbook(io.BytesIO(base64.b64decode(TEMPLATE_B64)))
     ws = wb.active
@@ -74,21 +74,42 @@ def build_report(email, cc, month_label, orders):
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
- 
+
+def get_signature(access_token):
+    try:
+        resp = requests.get(
+            'https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs',
+            headers={'Authorization': f'Bearer {access_token}'}
+        )
+        send_as_list = resp.json().get('sendAs', [])
+        for sa in send_as_list:
+            if sa.get('isDefault'):
+                return sa.get('signature', '')
+        return ''
+    except:
+        return ''
+
 def create_draft(access_token, to, cc, subject, body_text, attachment_bytes, attachment_filename):
     msg = MIMEMultipart()
     msg['To'] = to
     if cc:
         msg['Cc'] = cc
     msg['Subject'] = subject
+    signature = get_signature(access_token)
+    body_html = ''.join(f'<p>{line}</p>' if line.strip() else '<br>' for line in body_text.split('\n'))
+    if signature:
+        html_body = f'<html><body>{body_html}<br><br>{signature}</body></html>'
+    else:
+        html_body = f'<html><body>{body_html}</body></html>'
     msg.attach(MIMEText(body_text, 'plain'))
- 
+    msg.attach(MIMEText(html_body, 'html'))
+
     part = MIMEBase('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     part.set_payload(attachment_bytes)
     encoders.encode_base64(part)
     part.add_header('Content-Disposition', f'attachment; filename="{attachment_filename}"')
     msg.attach(part)
- 
+
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     resp = requests.post(
         'https://gmail.googleapis.com/gmail/v1/users/me/drafts',
@@ -96,7 +117,7 @@ def create_draft(access_token, to, cc, subject, body_text, attachment_bytes, att
         json={'message': {'raw': raw}}
     )
     return resp.status_code == 200, resp.json()
- 
+
 @app.route('/build', methods=['POST'])
 def build():
     data = request.json
@@ -105,21 +126,21 @@ def build():
         xlsx_bytes = build_report(rep['email'], rep.get('cc'), rep['monthLabel'], rep['orders'])
         results[rep['group']] = base64.b64encode(xlsx_bytes).decode()
     return jsonify(results)
- 
+
 @app.route('/send-drafts', methods=['POST'])
 def send_drafts():
     if not REFRESH_TOKEN:
         return jsonify({'error': 'Not authorized. Visit /authorize first.'}), 401
- 
+
     access_token = get_access_token()
     if not access_token:
         return jsonify({'error': 'Could not get access token. Re-authorize at /authorize.'}), 401
- 
+
     data = request.json
     results = []
     mm = data.get('mm', '')
     yy = data.get('yy', '')
- 
+
     for rep in data.get('reports', []):
         group = rep['group']
         to = rep['email']
@@ -127,13 +148,13 @@ def send_drafts():
         subject = f"{mm}/{yy} Commission Report"
         body = f"Hello,\n\nAttached is your commission report for {rep['monthLabel']}. If you have any questions, please let us know."
         filename = f"{group.replace(' ','_').replace('/','_')}_Commission_Report_{mm}-{yy}.xlsx"
- 
+
         xlsx_bytes = build_report(to, cc, rep['monthLabel'], rep['orders'])
         ok, resp = create_draft(access_token, to, cc, subject, body, xlsx_bytes, filename)
         results.append({'group': group, 'status': 'ok' if ok else 'error', 'detail': str(resp)})
- 
+
     return jsonify({'results': results})
- 
+
 @app.route('/authorize')
 def authorize():
     url = (
@@ -146,7 +167,7 @@ def authorize():
         '&prompt=consent'
     )
     return redirect(url)
- 
+
 @app.route('/oauth/callback')
 def oauth_callback():
     code = request.args.get('code')
@@ -169,10 +190,10 @@ def oauth_callback():
             f'<p>Once added, redeploy your Render service and the email drafting will work.</p>'
         )
     return f'Error getting refresh token: {tokens}', 400
- 
+
 @app.route('/')
 def health():
     return jsonify({'status': 'ok', 'authorized': bool(REFRESH_TOKEN)})
- 
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
