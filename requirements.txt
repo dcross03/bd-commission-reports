@@ -2,4 +2,4 @@ flask
 flask-cors
 openpyxl
 gunicorn
-anthropic
+requests
